@@ -1,0 +1,6 @@
+__pycache__
+
+# configuration
+config.json
+hermes-deployment.json
+hermes-deployment-info.md
