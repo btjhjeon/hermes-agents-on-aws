@@ -44,7 +44,7 @@ REGION = "us-west-2"
 INSTANCE_TYPE = "t3.medium"
 DASHBOARD_PORT = 9119
 VOLUME_SIZE = 40
-DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-5"
 EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
 EMBEDDING_DIMENSIONS = 1024
 DEFAULT_VPC_CIDRS = tuple(f"10.{octet}.0.0/16" for octet in range(20, 31))
@@ -1815,7 +1815,14 @@ class HermesInstaller:
         if credentials is None:
             raise RuntimeError("OpenSearch 요청에 사용할 AWS credentials가 없습니다.")
         frozen = credentials.get_frozen_credentials()
-        headers = {"Content-Type": "application/json"}
+        # AOSS 데이터 평면은 모든 SigV4 요청에 x-amz-content-sha256을
+        # 요구하며, 없으면 정책과 무관하게 403을 반환합니다.
+        headers = {
+            "Content-Type": "application/json",
+            "X-Amz-Content-SHA256": hashlib.sha256(
+                body or b""
+            ).hexdigest(),
+        }
         aws_request = AWSRequest(  # type: ignore[operator]
             method=method,
             url=url,
@@ -2338,6 +2345,39 @@ class HermesInstaller:
                         knowledge_base_id, data_source_id, job_id
                     )
                     return job_id
+        # AOSS data access policy 갱신은 전파에 몇 분이 걸릴 수 있어 직후의
+        # ingestion이 일시적인 authorization_exception으로 실패할 수 있으므로
+        # 해당 오류에 한해 대기 후 재시도합니다.
+        max_attempts = 5
+        for attempt in range(1, max_attempts + 1):
+            job_id = self._start_or_adopt_ingestion_job(
+                knowledge_base_id, data_source_id
+            )
+            self.state.update(knowledge_base_ingestion_job_id=job_id)
+            try:
+                self._wait_ingestion_job(
+                    knowledge_base_id, data_source_id, job_id
+                )
+                return job_id
+            except RuntimeError as exc:
+                if (
+                    "authorization_exception" not in str(exc)
+                    or attempt == max_attempts
+                ):
+                    raise
+                logger.info(
+                    "  AOSS 권한 전파 대기 후 ingestion 재시도 (%d/%d)",
+                    attempt,
+                    max_attempts,
+                )
+                time.sleep(60)
+        raise RuntimeError(
+            "Knowledge Base ingestion 재시도를 완료하지 못했습니다."
+        )
+
+    def _start_or_adopt_ingestion_job(
+        self, knowledge_base_id: str, data_source_id: str
+    ) -> str:
         try:
             response = self.bedrock_agent.start_ingestion_job(
                 knowledgeBaseId=knowledge_base_id,
@@ -2346,11 +2386,10 @@ class HermesInstaller:
                     "Initial Hermes installer document synchronization"
                 ),
             )
-            job_id = response["ingestionJob"]["ingestionJobId"]
+            return response["ingestionJob"]["ingestionJobId"]
         except ClientError as exc:
             if _error_code(exc) != "ConflictException":
                 raise
-            job_id = ""
             paginator = self.bedrock_agent.get_paginator(
                 "list_ingestion_jobs"
             )
@@ -2371,15 +2410,9 @@ class HermesInstaller:
                 )
                 if active:
                     job_id = active["ingestionJobId"]
-                    break
-            if not job_id:
-                raise
-            logger.info("  기존 ingestion job 대기: %s", job_id)
-        self.state.update(knowledge_base_ingestion_job_id=job_id)
-        self._wait_ingestion_job(
-            knowledge_base_id, data_source_id, job_id
-        )
-        return job_id
+                    logger.info("  기존 ingestion job 대기: %s", job_id)
+                    return job_id
+            raise
 
     # ------------------------------------------------------------------
     # EC2 and UserData

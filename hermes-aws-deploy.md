@@ -63,7 +63,7 @@ python3 installer.py \
 python3 installer.py \
   --region us-west-2 \
   --instance-type t3.medium \
-  --model-id global.anthropic.claude-sonnet-4-5-20250929-v1:0
+  --model-id global.anthropic.claude-sonnet-5
 ```
 
 ```text
@@ -495,7 +495,7 @@ browser tool을 사용하면 installer가 요구하는 Chromium과 shared librar
 
 ```yaml
 model:
-  default: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+  default: global.anthropic.claude-sonnet-5
   provider: bedrock
   base_url: https://bedrock-runtime.us-west-2.amazonaws.com
 bedrock:

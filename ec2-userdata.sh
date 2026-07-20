@@ -8,7 +8,7 @@ set -euo pipefail
 # region, model, OAuth 설정, browser 설치 여부를 주입합니다.
 
 AWS_REGION="${AWS_REGION:-us-west-2}"
-HERMES_MODEL_ID="${HERMES_MODEL_ID:-global.anthropic.claude-sonnet-4-5-20250929-v1:0}"
+HERMES_MODEL_ID="${HERMES_MODEL_ID:-global.anthropic.claude-sonnet-5}"
 DASHBOARD_OAUTH_CLIENT_ID="${DASHBOARD_OAUTH_CLIENT_ID:-}"
 DASHBOARD_PUBLIC_URL="${DASHBOARD_PUBLIC_URL:-}"
 DASHBOARD_PUBLIC_URL="${DASHBOARD_PUBLIC_URL%/}"
