@@ -74,6 +74,12 @@ installer는 SSM을 통해 OAuth 설정을 반영하고 Dashboard를 시작합�
 username/password 배포에 같은 명령을 실행하면 basic-auth 설정을 제거하고
 OAuth로 전환합니다.
 
+CloudFront domain은 distribution을 재생성할 때마다 바뀝니다. 재설치 후 기존
+client ID를 재사용하면 로그인 시 `redirect_uri_mismatch`가 발생하므로, Nous
+Portal 등록의 URL을 새 callback URL로 수정해야 합니다. 자세한 절차는
+[CloudFront 가이드](./cloudfront-setup.md#로그인-시-redirect_uri_mismatch)를
+참고하세요.
+
 기본값은 `us-west-2`, `t3.medium`, CloudFront 및 Knowledge Base 활성화입니다.
 주요 옵션은 다음과 같습니다.
 

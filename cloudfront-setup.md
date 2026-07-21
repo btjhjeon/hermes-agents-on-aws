@@ -205,6 +205,36 @@ aws cloudfront get-vpc-origin \
   --query 'VpcOrigin.Status'
 ```
 
+### 로그인 시 redirect_uri_mismatch
+
+Nous Portal이 다음 오류로 로그인을 거부하는 경우입니다.
+
+```text
+Error: redirect_uri_mismatch
+redirect_uri does not match the agent's canonical URL or localhost carve-out
+```
+
+Portal에 등록된 dashboard URL과 현재 CloudFront 도메인이 다를 때 발생합니다.
+CloudFront distribution은 재생성될 때마다 도메인이 바뀌므로, 재설치(삭제 후
+설치) 후 기존 client ID를 재사용하면 Portal에는 이전 도메인이 남아 있어
+불일치가 납니다.
+
+[Nous Portal Local Dashboards](https://portal.nousresearch.com/local-dashboards)에서
+해당 등록의 URL을 현재 callback URL로 수정하면 해결됩니다.
+
+```text
+https://<CLOUDFRONT_DOMAIN>/auth/callback
+```
+
+현재 값은 `assets/hermes-deployment-info.md` 또는
+`jq -r .dashboard_oauth_callback_url assets/hermes-deployment.json`에서 확인할
+수 있습니다. Portal에서 URL 수정이 불가능하면 기존 등록을 폐기하고 새로
+등록한 뒤, 발급받은 client ID로 installer를 재실행합니다.
+
+```bash
+python3 installer.py --dashboard-oauth-client-id agent:<새ID>
+```
+
 ### 로그인 화면 반복
 
 CloudFront가 cookie와 query string을 origin으로 전달하는지 확인합니다. 이

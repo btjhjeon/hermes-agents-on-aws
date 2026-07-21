@@ -402,12 +402,13 @@ class HermesInstaller:
             self.state.update(**knowledge_base)
 
         logger.info("12) Hermes Agent UserData 렌더링")
+        # Knowledge Base retrieve skill 파일은 SSM으로 설치합니다. user data는
+        # 16KB 제한이 있어 skill 파일을 인라인하면 초과하기 때문입니다.
         user_data = self._render_user_data(
             dashboard_oauth_client_id=dashboard_auth["oauth_client_id"],
             dashboard_public_url=self._stored_dashboard_public_url(),
             model_id=model_id,
             install_browser=install_browser,
-            knowledge_base=knowledge_base if enable_knowledge_base else None,
         )
 
         logger.info("13) Private Subnet에 EC2 생성")
@@ -430,8 +431,8 @@ class HermesInstaller:
                 model_id=model_id,
                 install_browser=install_browser,
             )
-        if enable_knowledge_base and existing_instance:
-            logger.info("  기존 EC2에 Knowledge Base Skill 설치")
+        if enable_knowledge_base:
+            logger.info("14) EC2에 Knowledge Base retrieve skill 설치")
             self._install_retrieve_skill_via_ssm(
                 instance["instance_id"], knowledge_base
             )
@@ -1601,16 +1602,31 @@ class HermesInstaller:
         include_installer: bool,
     ) -> List[Dict[str, Any]]:
         names = self._knowledge_base_names()
+        # Bedrock ingestion은 문서 write 중 index 설정을 갱신하므로 AWS 문서의
+        # 최소 3개 권한(Describe/Read/WriteDocument)만으로는 authorization_
+        # exception이 발생합니다. index 생성/갱신 권한과 collection describe를
+        # 함께 부여해야 ingestion이 성공합니다.
         policy = [{
-            "Rules": [{
-                "ResourceType": "index",
-                "Resource": [f"index/{names['collection']}/*"],
-                "Permission": [
-                    "aoss:DescribeIndex",
-                    "aoss:ReadDocument",
-                    "aoss:WriteDocument",
-                ],
-            }],
+            "Rules": [
+                {
+                    "ResourceType": "index",
+                    "Resource": [f"index/{names['collection']}/*"],
+                    "Permission": [
+                        "aoss:CreateIndex",
+                        "aoss:UpdateIndex",
+                        "aoss:DescribeIndex",
+                        "aoss:ReadDocument",
+                        "aoss:WriteDocument",
+                    ],
+                },
+                {
+                    "ResourceType": "collection",
+                    "Resource": [f"collection/{names['collection']}"],
+                    "Permission": [
+                        "aoss:DescribeCollectionItems",
+                    ],
+                },
+            ],
             "Principal": [knowledge_base_role_arn],
         }]
         if include_installer:
@@ -2452,7 +2468,6 @@ class HermesInstaller:
         dashboard_public_url: Optional[str],
         model_id: str,
         install_browser: bool,
-        knowledge_base: Optional[Dict[str, Any]] = None,
     ) -> str:
         config = self._render_hermes_config(
             model_id=model_id,
@@ -2472,7 +2487,7 @@ class HermesInstaller:
             "exec 2>&1",
             "",
             'echo "=== Hermes Agent installation started ==="',
-            f"dnf install -y {' '.join(system_packages)}",
+            f"dnf install -y --allowerasing {' '.join(system_packages)}",
             "timedatectl set-timezone Asia/Seoul || true",
             "",
             "sudo -u ec2-user -H bash -lc "
@@ -2487,10 +2502,6 @@ class HermesInstaller:
             "chmod 600 /home/ec2-user/.hermes/config.yaml",
             "",
         ]
-        if knowledge_base:
-            lines.extend(
-                self._knowledge_base_install_commands(knowledge_base)
-            )
         lines.extend([
             "cat > /etc/systemd/system/hermes-dashboard.service <<'SERVICE'",
             self._dashboard_systemd_unit().rstrip(),
@@ -2505,7 +2516,9 @@ class HermesInstaller:
 
     @staticmethod
     def _hermes_system_packages(install_browser: bool) -> List[str]:
-        packages = ["curl", "git"]
+        # curl은 Amazon Linux 2023에 curl-minimal로 이미 설치되어 있어,
+        # curl 패키지를 명시하면 dnf가 파일 충돌로 실패합니다.
+        packages = ["git"]
         if install_browser:
             packages.extend([
                 "alsa-lib",
@@ -2591,8 +2604,17 @@ class HermesInstaller:
         }
         commands = [
             'echo "=== Installing Hermes Knowledge Base skill ==="',
+            # 각 경로 레벨을 ec2-user 소유로 생성합니다. install -d에 -o를 줘도
+            # 새로 만들어지는 상위 디렉터리는 root 소유가 되어, 이후 ec2-user로
+            # 실행되는 hermes install.sh가 .hermes/bin을 만들지 못합니다.
+            (
+                "install -d -m 700 -o ec2-user -g ec2-user "
+                "/home/ec2-user/.hermes"
+            ),
             (
                 "install -d -m 755 -o ec2-user -g ec2-user "
+                "/home/ec2-user/.hermes/skills "
+                "/home/ec2-user/.hermes/skills/retrieve "
                 "/home/ec2-user/.hermes/skills/retrieve/scripts"
             ),
         ]
@@ -2657,10 +2679,17 @@ class HermesInstaller:
         commands = [
             "set -euo pipefail",
             (
-                "dnf install -y "
+                "dnf install -y --allowerasing "
                 + " ".join(self._hermes_system_packages(install_browser))
             ),
             "timedatectl set-timezone Asia/Seoul || true",
+            (
+                "install -d -m 700 -o ec2-user -g ec2-user "
+                "/home/ec2-user/.hermes"
+            ),
+            # 이전 실패로 skill만 root 권한으로 설치돼 .hermes가 root 소유일 수
+            # 있습니다. install.sh를 ec2-user로 실행하기 전에 소유권을 복구합니다.
+            "chown -R ec2-user:ec2-user /home/ec2-user/.hermes",
             (
                 f"if ! {hermes} --version >/dev/null 2>&1; then "
                 "sudo -u ec2-user -H bash -lc "
@@ -2673,10 +2702,6 @@ class HermesInstaller:
                 + "; fi"
             ),
             "test -x /home/ec2-user/.local/bin/hermes",
-            (
-                "install -d -m 700 -o ec2-user -g ec2-user "
-                "/home/ec2-user/.hermes"
-            ),
         ]
         config_values = {
             "model.default": model_id,
@@ -3454,6 +3479,10 @@ class HermesInstaller:
             "IsIPV6Enabled": True,
             "HttpVersion": "http2and3",
             "PriceClass": "PriceClass_All",
+            # custom domain을 쓰지 않으므로 빈 Aliases. UpdateDistribution은
+            # 전체 config 교체 방식이라 이 필드를 생략하면 IllegalUpdate
+            # (Aliases are missing)가 발생합니다.
+            "Aliases": {"Quantity": 0, "Items": []},
             "Origins": {
                 "Quantity": 1,
                 "Items": [{
@@ -3515,13 +3544,17 @@ class HermesInstaller:
         }
 
         if existing:
-            current = self.cf.get_distribution_config(
-                Id=existing["distribution_id"]
+            # UpdateDistribution은 전체 config 교체 방식이라, 우리가 명시하지
+            # 않는 Logging, FieldLevelEncryptionId 등 필수 필드가 누락되면
+            # IllegalUpdate/InvalidArgument가 발생합니다. 기존 config를
+            # 베이스로 관리 대상 필드만 덮어써서 나머지는 그대로 보존합니다.
+            merged_config = self._merge_distribution_config(
+                current["DistributionConfig"], config
             )
             distribution = self.cf.update_distribution(
                 Id=existing["distribution_id"],
                 IfMatch=current["ETag"],
-                DistributionConfig=config,
+                DistributionConfig=merged_config,
             )["Distribution"]
             logger.info("  CloudFront 업데이트: %s", distribution["Id"])
         else:
@@ -3543,6 +3576,41 @@ class HermesInstaller:
         }
         self.state.update(**result)
         return result
+
+    @staticmethod
+    def _merge_distribution_config(
+        base: Dict[str, Any], desired: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """기존 distribution config 위에 관리 대상 설정을 덮어씁니다.
+
+        UpdateDistribution은 전체 교체 방식이므로 top-level뿐 아니라
+        DefaultCacheBehavior, origin item 내부의 필수 하위 필드
+        (FieldLevelEncryptionId, TrustedSigners 등)도 보존해야 합니다.
+        dict 값은 한 단계 더 병합하고, 그 외에는 desired가 우선합니다.
+        """
+        merged = {**base, **desired}
+        for key, value in desired.items():
+            if isinstance(value, dict) and isinstance(base.get(key), dict):
+                merged[key] = {**base[key], **value}
+        # Origins.Items는 origin Id 기준으로 병합해 기존 항목의 필수
+        # 하위 필드를 유지합니다.
+        base_items = {
+            item.get("Id"): item
+            for item in base.get("Origins", {}).get("Items", [])
+        }
+        desired_origins = desired.get("Origins", {}).get("Items")
+        if desired_origins is not None:
+            merged_items = [
+                {**base_items.get(item.get("Id"), {}), **item}
+                for item in desired_origins
+            ]
+            merged["Origins"] = {
+                **base.get("Origins", {}),
+                **desired["Origins"],
+                "Items": merged_items,
+                "Quantity": len(merged_items),
+            }
+        return merged
 
     def _wait_for_cloudfront_deployed(
         self, distribution_id: str
