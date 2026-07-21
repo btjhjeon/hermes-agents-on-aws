@@ -1,16 +1,18 @@
-# AWS에서 Hermes Agent 안전하게 활용하기
+# Running Hermes Agent Safely on AWS
 
-Hermes Agent를 AWS에 독립적으로 배포하는 저장소입니다. 기존 환경을
-재사용하지 않고 전용 VPC, private subnet의 EC2, IAM Role, Bedrock VPC
-Endpoint, NAT Gateway, ALB, CloudFront를 생성합니다. 웹에서는 Hermes
-Dashboard를 사용하고, 필요하면 별도의 messaging gateway를 구성해 Telegram
-등에서 대화할 수 있습니다.
+English | [한국어](./README_ko.md)
+
+This repository deploys Hermes Agent standalone on AWS. Instead of reusing an
+existing environment, it creates a dedicated VPC, an EC2 instance in a private
+subnet, an IAM Role, a Bedrock VPC Endpoint, a NAT Gateway, an ALB, and
+CloudFront. Use the Hermes Dashboard on the web, and optionally configure a
+separate messaging gateway to chat from Telegram and other platforms.
 
 ```text
 Browser
   -> CloudFront (HTTPS)
-  -> CloudFront VPC Origin (VPC 내부 ENI)
-  -> Internal ALB (CloudFront origin 검증)
+  -> CloudFront VPC Origin (ENI inside the VPC)
+  -> Internal ALB (CloudFront origin verification)
   -> EC2 private IP:9119
   -> Hermes Dashboard
 
@@ -26,62 +28,66 @@ Hermes Agent
   -> Bedrock Knowledge Base / S3 / OpenSearch Serverless
 ```
 
-ALB와 CloudFront는 Dashboard를 안전하게 외부에 제공하기 위한 구성입니다.
-ALB는 private subnet의 internal ALB이며, CloudFront가 VPC origin으로 직접
-연결하므로 인터넷에 노출되지 않습니다. Telegram polling에는 ALB가 필요하지
-않지만, EC2의 인터넷 아웃바운드를 위한 NAT Gateway가 필요합니다.
+The ALB and CloudFront exist to expose the Dashboard to the outside world
+safely. The ALB is an internal ALB in private subnets; CloudFront connects to
+it directly through a VPC origin, so it is never exposed to the internet.
+Telegram polling does not need the ALB, but it does require the NAT Gateway
+for the EC2 instance's outbound internet access.
 
-## 사전 준비
+## Prerequisites
 
-- Python 3.10 이상
-- AWS CLI에 설정된 배포 권한
-- 사용할 Region에서 활성화된 Amazon Bedrock 모델 접근 권한
-- 공개 Dashboard 로그인에 사용할 Nous Portal 계정
-- `boto3` 설치
+- Python 3.10 or later
+- Deployment permissions configured in the AWS CLI
+- Amazon Bedrock model access enabled in the target Region
+- A Nous Portal account for public Dashboard login
+- `boto3` installed
 
 ```bash
 python3 -m pip install -r requirements.txt
 aws sts get-caller-identity
 ```
 
-## AWS에 설치
+## Installing on AWS
 
-공개 Dashboard는 Hermes 공식 권장 방식인 Nous OAuth를 사용합니다. CloudFront
-callback URL이 배포 중 생성되므로 설치는 두 단계로 진행됩니다.
+The public Dashboard uses Nous OAuth, the officially recommended method for
+Hermes. Because the CloudFront callback URL is created during deployment,
+installation is a two-step process.
 
-먼저 인프라를 생성합니다. 이 단계에서는 인증되지 않은 Dashboard가 노출되지
-않도록 서비스가 중지된 상태로 유지됩니다.
+First, create the infrastructure. During this step the service is kept
+stopped so that an unauthenticated Dashboard is never exposed.
 
 ```bash
 python3 installer.py
 ```
 
-installer는 CloudFront VPC origin을 생성해 private subnet의 internal ALB로
-직접 연결합니다. 별도의 domain이나 인증서 없이 사용자 접속 URL은 기본
-CloudFront domain입니다.
+The installer creates a CloudFront VPC origin that connects directly to the
+internal ALB in the private subnets. No separate domain or certificate is
+needed; the user-facing URL is the default CloudFront domain.
 
-`assets/hermes-deployment-info.md`에 기록된 OAuth callback URL을
-[Nous Portal Local Dashboards](https://portal.nousresearch.com/local-dashboards)에
-등록하고 `agent:...` 형식의 client ID를 발급받습니다. 그다음 같은 옵션에
-client ID를 추가해 재실행합니다.
+Register the OAuth callback URL recorded in
+`assets/hermes-deployment-info.md` at
+[Nous Portal Local Dashboards](https://portal.nousresearch.com/local-dashboards)
+and obtain a client ID in the `agent:...` format. Then re-run the installer
+with the same options plus the client ID.
 
 ```bash
 python3 installer.py \
   --dashboard-oauth-client-id agent:<ID>
 ```
 
-installer는 SSM을 통해 OAuth 설정을 반영하고 Dashboard를 시작합니다. 기존
-username/password 배포에 같은 명령을 실행하면 basic-auth 설정을 제거하고
-OAuth로 전환합니다.
+The installer applies the OAuth settings via SSM and starts the Dashboard.
+Running the same command against an existing username/password deployment
+removes the basic-auth settings and switches it to OAuth.
 
-CloudFront domain은 distribution을 재생성할 때마다 바뀝니다. 재설치 후 기존
-client ID를 재사용하면 로그인 시 `redirect_uri_mismatch`가 발생하므로, Nous
-Portal 등록의 URL을 새 callback URL로 수정해야 합니다. 자세한 절차는
-[CloudFront 가이드](./cloudfront-setup.md#로그인-시-redirect_uri_mismatch)를
-참고하세요.
+The CloudFront domain changes every time the distribution is recreated. If
+you reuse an existing client ID after reinstalling, login fails with
+`redirect_uri_mismatch`; update the URL of the Nous Portal registration to
+the new callback URL. See the
+[CloudFront guide](./cloudfront-setup.md#로그인-시-redirect_uri_mismatch)
+for the detailed procedure.
 
-기본값은 `us-west-2`, `t3.medium`, CloudFront 및 Knowledge Base 활성화입니다.
-주요 옵션은 다음과 같습니다.
+Defaults are `us-west-2`, `t3.medium`, with CloudFront and the Knowledge
+Base enabled. Key options:
 
 ```bash
 python3 installer.py \
@@ -92,27 +98,28 @@ python3 installer.py \
 
 ```text
 --dashboard-oauth-client-id ID   Nous Portal OAuth client ID (agent:...)
---disable-knowledge-base        Knowledge Base 관련 리소스 생략
---skip-browser                  Hermes browser tool용 Chromium 설치 생략
+--disable-knowledge-base        Skip Knowledge Base related resources
+--skip-browser                  Skip Chromium install for the Hermes browser tool
 ```
 
-`--disable-cloudfront`는 Dashboard 로그인을 public HTTP로 노출하므로 지원하지
-않습니다.
+`--disable-cloudfront` is not supported because it would expose Dashboard
+login over public HTTP.
 
-설치 결과는 다음 파일에 저장됩니다.
+Installation results are stored in the following files:
 
-- `assets/hermes-deployment.json`: 재실행 및 삭제에 사용하는 배포 상태
-- `assets/hermes-deployment-info.md`: 접속 URL, OAuth callback, 운영 명령
+- `assets/hermes-deployment.json`: deployment state used for re-runs and deletion
+- `assets/hermes-deployment-info.md`: access URL, OAuth callback, operating commands
 
-상태 파일에는 origin 검증 secret이 포함될 수 있으므로 외부에 공유하지 마세요.
-같은 옵션으로 installer를 다시 실행하면 저장된 상태를 기준으로 리소스를
-재사용하거나 복구합니다.
+The state file may contain the origin verification secret, so do not share
+it externally. Re-running the installer with the same options reuses or
+repairs resources based on the stored state.
 
-## Dashboard 접속
+## Accessing the Dashboard
 
-OAuth 설정을 완료한 뒤 `assets/hermes-deployment-info.md`의 URL을 브라우저에서
-열고 **Sign in with Nous Research**를 선택합니다. Hermes Dashboard는
-installer가 생성한 `hermes-dashboard.service`가 포트 `9119`에서 제공합니다.
+After completing the OAuth setup, open the URL from
+`assets/hermes-deployment-info.md` in a browser and choose **Sign in with
+Nous Research**. The Hermes Dashboard is served on port `9119` by the
+`hermes-dashboard.service` unit the installer created.
 
 ```bash
 aws ssm start-session \
@@ -123,16 +130,17 @@ sudo systemctl status hermes-dashboard.service
 sudo journalctl -u hermes-dashboard.service -f
 ```
 
-ALB는 internal이므로 인터넷에서 직접 접근할 수 없고, VPC origin을 통해
-CloudFront가 전달한 요청 중 origin 검증 header가 일치하는 것만 EC2로
-전달합니다. 상세 설정은 [ALB 가이드](./alb-setup.md)와
-[CloudFront 가이드](./cloudfront-setup.md)를 참고하세요.
+Because the ALB is internal, it cannot be reached directly from the
+internet; only requests forwarded by CloudFront through the VPC origin that
+carry the matching origin verification header are passed to EC2. See the
+[ALB guide](./alb-setup.md) and the
+[CloudFront guide](./cloudfront-setup.md) for details.
 
-## Telegram 연결
+## Connecting Telegram
 
-Dashboard와 Telegram gateway는 서로 다른 프로세스입니다. installer는
-Dashboard만 자동 실행하므로 Telegram을 사용하려면 EC2에서 Hermes 공식
-gateway 설정을 한 번 수행해야 합니다.
+The Dashboard and the Telegram gateway are separate processes. The installer
+only starts the Dashboard automatically, so to use Telegram you must run the
+official Hermes gateway setup once on the EC2 instance.
 
 ```bash
 aws ssm start-session \
@@ -146,22 +154,23 @@ hermes gateway start
 hermes gateway status --deep
 ```
 
-설정 마법사에서 Telegram과 BotFather가 발급한 token을 선택합니다. DM
-pairing을 사용하면 사용자가 받은 code를 다음과 같이 승인합니다.
+In the setup wizard, choose Telegram and the token issued by BotFather. With
+DM pairing, approve the code a user receives like this:
 
 ```bash
 hermes pairing list
 hermes pairing approve telegram <CODE>
 ```
 
-token을 명령줄이나 문서에 직접 기록하지 마세요. Hermes는 secret을
-`~/.hermes/.env`에 저장합니다. 전체 절차와 장애 진단은
-[Telegram 가이드](./telegram-setup.md)를 참고하세요.
+Never write tokens directly on the command line or in documents. Hermes
+stores secrets in `~/.hermes/.env`. See the
+[Telegram guide](./telegram-setup.md) for the full procedure and
+troubleshooting.
 
-## EC2에서 Hermes 사용
+## Using Hermes on EC2
 
-SSM으로 접속한 최초 shell은 `ssm-user`이므로 Hermes를 설치한 `ec2-user`로
-전환합니다.
+The initial shell over SSM is `ssm-user`, so switch to `ec2-user`, where
+Hermes is installed.
 
 ```bash
 sudo su - ec2-user
@@ -172,36 +181,38 @@ hermes dashboard --status
 hermes gateway status
 ```
 
-터미널 대화는 다음 명령으로 시작합니다.
+Start a terminal conversation with:
 
 ```bash
 hermes
 ```
 
-한 번만 질문하려면 다음과 같이 실행합니다.
+To ask a single question:
 
 ```bash
-hermes chat -q "현재 프로젝트를 요약해줘"
+hermes chat -q "Summarize the current project"
 ```
 
-더 많은 명령은 [사용 가이드](./use_command.md)에 정리되어 있습니다.
+More commands are covered in the [usage guide](./use_command.md).
 
-## 개인 PC에 설치
+## Installing on a Personal Machine
 
-공식 installer를 사용합니다.
+Use the official installer.
 
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 hermes setup
 ```
 
-이 저장소의 AWS installer는 EC2 Instance Profile을 사용하므로 AWS access key를
-인스턴스에 저장하지 않습니다. 개인 PC에서 Bedrock을 사용할 때는 AWS CLI
-profile이나 SSO 등 표준 credential chain을 별도로 구성해야 합니다.
+The AWS installer in this repository uses an EC2 Instance Profile, so no AWS
+access keys are stored on the instance. When using Bedrock from a personal
+machine, configure the standard credential chain separately, such as an AWS
+CLI profile or SSO.
 
-## Bedrock 모델 설정
+## Bedrock Model Configuration
 
-AWS 배포 시 installer가 `~/.hermes/config.yaml`에 다음 구조를 생성합니다.
+For AWS deployments, the installer creates the following structure in
+`~/.hermes/config.yaml`.
 
 ```yaml
 model:
@@ -212,8 +223,8 @@ bedrock:
   region: us-west-2
 ```
 
-모델을 변경할 때는 Region에서 사용할 수 있고 계정에 접근 권한이 있는 Bedrock
-model 또는 inference profile ID를 지정합니다.
+To change the model, specify a Bedrock model or inference profile ID that is
+available in the Region and that your account has access to.
 
 ```bash
 hermes model
@@ -221,12 +232,14 @@ hermes config set model.default <BEDROCK_MODEL_ID>
 hermes config check
 ```
 
-installer가 관리하는 EC2에서는 Instance Profile이 인증을 제공하므로
-`AWS_ACCESS_KEY_ID`와 `AWS_SECRET_ACCESS_KEY`를 설정하지 않습니다.
+On EC2 instances managed by the installer, the Instance Profile provides
+authentication, so do not set `AWS_ACCESS_KEY_ID` or
+`AWS_SECRET_ACCESS_KEY`.
 
-## Skill
+## Skills
 
-설치된 skill을 확인하고 registry에서 검색하거나 설치할 수 있습니다.
+You can list installed skills and search for or install skills from the
+registry.
 
 ```bash
 hermes skills list
@@ -236,22 +249,22 @@ hermes skills install <IDENTIFIER>
 hermes skills audit
 ```
 
-Knowledge Base가 활성화되면 installer가 retrieve skill을
-`~/.hermes/skills/retrieve`에 배치합니다. 문서 검색은 채팅에서 `/retrieve
-<질문>`으로 요청하거나 EC2에서 직접 확인할 수 있습니다.
+When the Knowledge Base is enabled, the installer places the retrieve skill
+in `~/.hermes/skills/retrieve`. Search documents from chat with `/retrieve
+<question>`, or verify directly on EC2:
 
 ```bash
 python3 ~/.hermes/skills/retrieve/scripts/retrieve_search.py \
-  "장애 코드의 원인과 해결 방법"
+  "Causes and fixes for the error code"
 ```
 
 ## Cron
 
-Gateway가 계속 실행 중이어야 예약 작업이 처리됩니다.
+The gateway must stay running for scheduled jobs to be processed.
 
 ```bash
 hermes cron create "0 9 * * *" \
-  "오늘의 운영 상태를 요약해줘" \
+  "Summarize today's operational status" \
   --name daily-status \
   --deliver telegram
 
@@ -263,9 +276,10 @@ hermes cron resume <JOB_ID>
 hermes cron remove <JOB_ID>
 ```
 
-## Kiro CLI 설치
+## Installing the Kiro CLI
 
-Kiro CLI를 함께 사용하려면 EC2에 SSM으로 접속한 뒤 `ec2-user`로 전환합니다.
+To use the Kiro CLI alongside Hermes, connect to EC2 over SSM and switch to
+`ec2-user`.
 
 ```bash
 sudo su - ec2-user
@@ -274,13 +288,14 @@ kiro-cli login --use-device-flow
 kiro-cli chat
 ```
 
-Kiro CLI 인증과 과금은 Hermes 및 이 저장소가 생성한 IAM Role과 별개입니다.
+Kiro CLI authentication and billing are separate from Hermes and from the
+IAM Role created by this repository.
 
-## Gmail 연결
+## Connecting Gmail
 
-Hermes의 Google Workspace 관련 skill이 요구하는 도구와 OAuth credential을
-준비해야 합니다. `gog`를 사용하는 경우 로컬 PC에서는 다음과 같이 설치하고
-인증할 수 있습니다.
+Prepare the tools and OAuth credentials required by Hermes's Google
+Workspace skills. If you use `gog`, install and authenticate on a local
+machine like this:
 
 ```bash
 brew install steipete/tap/gogcli
@@ -289,43 +304,43 @@ gog auth add your-email@gmail.com --services gmail,calendar,drive,contacts
 gog auth list
 ```
 
-Google Cloud Console에서 Gmail, Calendar, Drive API를 활성화하고 Desktop app
-유형의 OAuth client를 사용합니다. headless EC2에서 OAuth callback을 처리해야
-한다면 Dashboard의 터미널이나 안내되는 device flow를 사용하고, credential
-파일을 저장소에 commit하지 마세요.
+Enable the Gmail, Calendar, and Drive APIs in the Google Cloud Console and
+use an OAuth client of the Desktop app type. If you need to handle the OAuth
+callback on a headless EC2 instance, use the Dashboard's terminal or the
+guided device flow, and never commit credential files to the repository.
 
-## Knowledge Base에 문서 등록
+## Registering Documents in the Knowledge Base
 
-installer는 기본적으로 S3, OpenSearch Serverless, Bedrock Knowledge Base와
-retrieve skill을 함께 생성합니다. `contents/` 아래에 지원 문서를 넣고 다음을
-실행합니다.
+By default the installer creates S3, OpenSearch Serverless, a Bedrock
+Knowledge Base, and the retrieve skill together. Place supported documents
+under `contents/` and run:
 
 ```bash
 python3 add_content.py
 ```
 
-지원 형식은 PDF, TXT, Markdown, HTML, CSV, DOC/DOCX, XLS/XLSX입니다. 파일의
-SHA-256이 바뀐 경우에만 다시 업로드하고, 변경이 있으면 ingestion이 완료될
-때까지 기다립니다.
+Supported formats are PDF, TXT, Markdown, HTML, CSV, DOC/DOCX, and
+XLS/XLSX. Files are re-uploaded only when their SHA-256 changes, and if
+anything changed the script waits for ingestion to complete.
 
 ```bash
-# S3에서 로컬에 없는 문서도 삭제
+# Also delete documents from S3 that no longer exist locally
 python3 add_content.py --delete-missing
 
-# 문서 변경이 없어도 ingestion 시작
+# Start ingestion even when no documents changed
 python3 add_content.py --force-sync
 
-# ingestion 시작 후 기다리지 않고 종료
+# Exit right after starting ingestion without waiting
 python3 add_content.py --no-wait
 ```
 
-`contents/error_code.pdf`처럼 기존에 사용하던 문서도 같은 디렉터리에 두면
-그대로 인덱싱됩니다. 배포 식별자는 하드코딩하지 않고
-`assets/hermes-deployment.json`에서 읽습니다.
+Existing documents such as `contents/error_code.pdf` are indexed as-is when
+placed in the same directory. Deployment identifiers are not hardcoded; they
+are read from `assets/hermes-deployment.json`.
 
-## 업데이트
+## Updating
 
-Hermes 공식 updater를 사용한 뒤 서비스를 재시작합니다.
+Use the official Hermes updater, then restart the service.
 
 ```bash
 sudo su - ec2-user
@@ -335,7 +350,7 @@ exit
 sudo systemctl restart hermes-dashboard.service
 ```
 
-Telegram gateway를 설치했다면 `ec2-user`에서 별도로 재시작합니다.
+If you installed the Telegram gateway, restart it separately as `ec2-user`.
 
 ```bash
 sudo su - ec2-user
@@ -343,26 +358,27 @@ hermes gateway restart
 hermes gateway status --deep
 ```
 
-## 인프라 삭제
+## Deleting the Infrastructure
 
-installer가 기록한 `assets/hermes-deployment.json`을 기준으로 관리 대상
-리소스만 삭제합니다. CloudFront distribution과 VPC origin을 삭제한 뒤
-ALB, VPC 순으로 정리합니다.
+Only managed resources are deleted, based on the
+`assets/hermes-deployment.json` file the installer recorded. The CloudFront
+distribution and VPC origin are deleted first, followed by the ALB and the
+VPC.
 
 ```bash
 python3 uninstaller.py
 ```
 
-수동 `create-instance.sh`로 만든 인스턴스는 별도 태그를 사용하므로 이
-uninstaller의 관리 대상이 아닙니다.
+Instances created manually with `create-instance.sh` use different tags and
+are not managed by this uninstaller.
 
-## 상세 문서
+## Detailed Documentation
 
-- [AWS 수동 배포 가이드](./hermes-aws-deploy.md)
-- [ALB 설정](./alb-setup.md)
-- [CloudFront 설정](./cloudfront-setup.md)
-- [Telegram 설정](./telegram-setup.md)
-- [Hermes 명령어와 운영](./use_command.md)
+- [AWS manual deployment guide](./hermes-aws-deploy.md)
+- [ALB setup](./alb-setup.md)
+- [CloudFront setup](./cloudfront-setup.md)
+- [Telegram setup](./telegram-setup.md)
+- [Hermes commands and operations](./use_command.md)
 - [Retrieve skill](./skills/retrieve/SKILL.md)
 
 ## Reference
