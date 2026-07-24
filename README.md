@@ -34,6 +34,69 @@ it directly through a VPC origin, so it is never exposed to the internet.
 Telegram polling does not need the ALB, but it does require the NAT Gateway
 for the EC2 instance's outbound internet access.
 
+The full architecture, including subnet placement, security-group paths, and
+VPC endpoints:
+
+```mermaid
+flowchart TB
+    user["User Browser"]
+    operator["Operator<br/>SSM Session Manager"]
+    tg["Telegram Bot API"]
+    nous["Nous Portal — OAuth"]
+
+    subgraph edge["CloudFront — Global Edge"]
+        cf["Distribution<br/>*.cloudfront.net · HTTPS"]
+    end
+
+    subgraph vpc["Dedicated VPC"]
+        igw["Internet Gateway"]
+        subgraph pub["Public Subnets"]
+            nat["NAT Gateway"]
+        end
+        subgraph prv["Private Subnets"]
+            oeni["CloudFront VPC Origin<br/>managed ENI"]
+            alb["Internal ALB<br/>HTTP :80"]
+            ec2["EC2 — Amazon Linux 2023<br/>Hermes Dashboard :9119<br/>Agent + messaging gateway"]
+            bre["Bedrock Runtime<br/>Interface Endpoint"]
+            bare["Bedrock Agent Runtime<br/>Interface Endpoint"]
+        end
+    end
+
+    subgraph svc["Amazon Bedrock and Storage"]
+        bedrock["Amazon Bedrock<br/>model inference"]
+        kb["Bedrock Knowledge Base"]
+        aoss["OpenSearch Serverless"]
+        s3["S3 — documents"]
+    end
+
+    ssm["AWS Systems Manager"]
+
+    user -->|"1 · HTTPS"| cf
+    cf -->|"2 · VPC origin"| oeni
+    oeni -->|"3 · CloudFront prefix list"| alb
+    alb -->|"4 · X-Origin-Verify · :9119"| ec2
+
+    ec2 -->|"SigV4 · 443"| bre --> bedrock
+    ec2 -->|"retrieve skill"| bare --> kb
+    kb --> aoss
+    kb --> s3
+
+    ec2 -->|"egress"| nat --> igw
+    igw <-->|"Bot API"| tg
+    igw <-->|"SSM channel"| ssm
+    operator -->|"start-session"| ssm
+    ssm -.->|"agent"| ec2
+    user -.->|"Sign in"| nous
+    nous -.->|"callback"| cf
+```
+
+Security groups enforce each hop: the ALB only accepts port 80 from the
+CloudFront-managed prefix list, the EC2 instance only accepts port 9119 from
+the ALB security group, and the VPC endpoints only accept port 443 from the
+EC2 security group. Bedrock traffic stays inside the VPC via interface
+endpoints, while Telegram, SSM, and package downloads egress through the NAT
+Gateway.
+
 ## Prerequisites
 
 - Python 3.10 or later
@@ -83,7 +146,7 @@ The CloudFront domain changes every time the distribution is recreated. If
 you reuse an existing client ID after reinstalling, login fails with
 `redirect_uri_mismatch`; update the URL of the Nous Portal registration to
 the new callback URL. See the
-[CloudFront guide](./cloudfront-setup.md#로그인-시-redirect_uri_mismatch)
+[CloudFront guide](./docs/cloudfront-setup.md#로그인-시-redirect_uri_mismatch)
 for the detailed procedure.
 
 Defaults are `us-west-2`, `t3.medium`, with CloudFront and the Knowledge
@@ -133,8 +196,8 @@ sudo journalctl -u hermes-dashboard.service -f
 Because the ALB is internal, it cannot be reached directly from the
 internet; only requests forwarded by CloudFront through the VPC origin that
 carry the matching origin verification header are passed to EC2. See the
-[ALB guide](./alb-setup.md) and the
-[CloudFront guide](./cloudfront-setup.md) for details.
+[ALB guide](./docs/alb-setup.md) and the
+[CloudFront guide](./docs/cloudfront-setup.md) for details.
 
 ## Connecting Telegram
 
@@ -164,7 +227,7 @@ hermes pairing approve telegram <CODE>
 
 Never write tokens directly on the command line or in documents. Hermes
 stores secrets in `~/.hermes/.env`. See the
-[Telegram guide](./telegram-setup.md) for the full procedure and
+[Telegram guide](./docs/telegram-setup.md) for the full procedure and
 troubleshooting.
 
 ## Using Hermes on EC2
@@ -193,7 +256,7 @@ To ask a single question:
 hermes chat -q "Summarize the current project"
 ```
 
-More commands are covered in the [usage guide](./use_command.md).
+More commands are covered in the [usage guide](./docs/use_command.md).
 
 ## Installing on a Personal Machine
 
@@ -374,11 +437,11 @@ are not managed by this uninstaller.
 
 ## Detailed Documentation
 
-- [AWS manual deployment guide](./hermes-aws-deploy.md)
-- [ALB setup](./alb-setup.md)
-- [CloudFront setup](./cloudfront-setup.md)
-- [Telegram setup](./telegram-setup.md)
-- [Hermes commands and operations](./use_command.md)
+- [AWS manual deployment guide](./docs/hermes-aws-deploy.md)
+- [ALB setup](./docs/alb-setup.md)
+- [CloudFront setup](./docs/cloudfront-setup.md)
+- [Telegram setup](./docs/telegram-setup.md)
+- [Hermes commands and operations](./docs/use_command.md)
 - [Retrieve skill](./skills/retrieve/SKILL.md)
 
 ## Reference
@@ -387,3 +450,10 @@ are not managed by this uninstaller.
 - [Hermes Agent Documentation](https://hermes-agent.nousresearch.com/docs/)
 - [Amazon Bedrock Knowledge Bases](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html)
 - [AWS Systems Manager Session Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager.html)
+- [kyopark2014/openclaw](https://github.com/kyopark2014/openclaw)
+
+## Acknowledgements
+
+The AWS deployment approach in this repository references
+[kyopark2014/openclaw](https://github.com/kyopark2014/openclaw). Many thanks to
+[kyopark2014](https://github.com/kyopark2014) for sharing that work.

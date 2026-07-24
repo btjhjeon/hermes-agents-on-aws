@@ -33,6 +33,68 @@ ALB는 private subnet의 internal ALB이며, CloudFront가 VPC origin으로 직�
 연결하므로 인터넷에 노출되지 않습니다. Telegram polling에는 ALB가 필요하지
 않지만, EC2의 인터넷 아웃바운드를 위한 NAT Gateway가 필요합니다.
 
+subnet 배치, security group 경로, VPC endpoint를 포함한 전체 아키텍처는
+다음과 같습니다.
+
+```mermaid
+flowchart TB
+    user["사용자 브라우저"]
+    operator["운영자<br/>SSM Session Manager"]
+    tg["Telegram Bot API"]
+    nous["Nous Portal — OAuth"]
+
+    subgraph edge["CloudFront — 글로벌 엣지"]
+        cf["Distribution<br/>*.cloudfront.net · HTTPS"]
+    end
+
+    subgraph vpc["전용 VPC"]
+        igw["Internet Gateway"]
+        subgraph pub["Public Subnet"]
+            nat["NAT Gateway"]
+        end
+        subgraph prv["Private Subnet"]
+            oeni["CloudFront VPC Origin<br/>managed ENI"]
+            alb["Internal ALB<br/>HTTP :80"]
+            ec2["EC2 — Amazon Linux 2023<br/>Hermes Dashboard :9119<br/>Agent + messaging gateway"]
+            bre["Bedrock Runtime<br/>Interface Endpoint"]
+            bare["Bedrock Agent Runtime<br/>Interface Endpoint"]
+        end
+    end
+
+    subgraph svc["Amazon Bedrock 및 스토리지"]
+        bedrock["Amazon Bedrock<br/>model inference"]
+        kb["Bedrock Knowledge Base"]
+        aoss["OpenSearch Serverless"]
+        s3["S3 — 문서"]
+    end
+
+    ssm["AWS Systems Manager"]
+
+    user -->|"1 · HTTPS"| cf
+    cf -->|"2 · VPC origin"| oeni
+    oeni -->|"3 · CloudFront prefix list"| alb
+    alb -->|"4 · X-Origin-Verify · :9119"| ec2
+
+    ec2 -->|"SigV4 · 443"| bre --> bedrock
+    ec2 -->|"retrieve skill"| bare --> kb
+    kb --> aoss
+    kb --> s3
+
+    ec2 -->|"아웃바운드"| nat --> igw
+    igw <-->|"Bot API"| tg
+    igw <-->|"SSM 채널"| ssm
+    operator -->|"start-session"| ssm
+    ssm -.->|"agent"| ec2
+    user -.->|"로그인"| nous
+    nous -.->|"callback"| cf
+```
+
+security group이 각 구간을 강제합니다. ALB는 CloudFront managed prefix
+list에서 오는 80 포트만, EC2는 ALB security group에서 오는 9119 포트만,
+VPC endpoint는 EC2 security group에서 오는 443 포트만 허용합니다. Bedrock
+트래픽은 interface endpoint를 통해 VPC 내부에 머물고, Telegram·SSM·패키지
+다운로드는 NAT Gateway로 아웃바운드합니다.
+
 ## 사전 준비
 
 - Python 3.10 이상
@@ -79,7 +141,7 @@ OAuth로 전환합니다.
 CloudFront domain은 distribution을 재생성할 때마다 바뀝니다. 재설치 후 기존
 client ID를 재사용하면 로그인 시 `redirect_uri_mismatch`가 발생하므로, Nous
 Portal 등록의 URL을 새 callback URL로 수정해야 합니다. 자세한 절차는
-[CloudFront 가이드](./cloudfront-setup.md#로그인-시-redirect_uri_mismatch)를
+[CloudFront 가이드](./docs/cloudfront-setup.md#로그인-시-redirect_uri_mismatch)를
 참고하세요.
 
 기본값은 `us-west-2`, `t3.medium`, CloudFront 및 Knowledge Base 활성화입니다.
@@ -127,8 +189,8 @@ sudo journalctl -u hermes-dashboard.service -f
 
 ALB는 internal이므로 인터넷에서 직접 접근할 수 없고, VPC origin을 통해
 CloudFront가 전달한 요청 중 origin 검증 header가 일치하는 것만 EC2로
-전달합니다. 상세 설정은 [ALB 가이드](./alb-setup.md)와
-[CloudFront 가이드](./cloudfront-setup.md)를 참고하세요.
+전달합니다. 상세 설정은 [ALB 가이드](./docs/alb-setup.md)와
+[CloudFront 가이드](./docs/cloudfront-setup.md)를 참고하세요.
 
 ## Telegram 연결
 
@@ -158,7 +220,7 @@ hermes pairing approve telegram <CODE>
 
 token을 명령줄이나 문서에 직접 기록하지 마세요. Hermes는 secret을
 `~/.hermes/.env`에 저장합니다. 전체 절차와 장애 진단은
-[Telegram 가이드](./telegram-setup.md)를 참고하세요.
+[Telegram 가이드](./docs/telegram-setup.md)를 참고하세요.
 
 ## EC2에서 Hermes 사용
 
@@ -186,7 +248,7 @@ hermes
 hermes chat -q "현재 프로젝트를 요약해줘"
 ```
 
-더 많은 명령은 [사용 가이드](./use_command.md)에 정리되어 있습니다.
+더 많은 명령은 [사용 가이드](./docs/use_command.md)에 정리되어 있습니다.
 
 ## 개인 PC에 설치
 
@@ -360,11 +422,11 @@ uninstaller의 관리 대상이 아닙니다.
 
 ## 상세 문서
 
-- [AWS 수동 배포 가이드](./hermes-aws-deploy.md)
-- [ALB 설정](./alb-setup.md)
-- [CloudFront 설정](./cloudfront-setup.md)
-- [Telegram 설정](./telegram-setup.md)
-- [Hermes 명령어와 운영](./use_command.md)
+- [AWS 수동 배포 가이드](./docs/hermes-aws-deploy.md)
+- [ALB 설정](./docs/alb-setup.md)
+- [CloudFront 설정](./docs/cloudfront-setup.md)
+- [Telegram 설정](./docs/telegram-setup.md)
+- [Hermes 명령어와 운영](./docs/use_command.md)
 - [Retrieve skill](./skills/retrieve/SKILL.md)
 
 ## Reference
@@ -373,3 +435,11 @@ uninstaller의 관리 대상이 아닙니다.
 - [Hermes Agent Documentation](https://hermes-agent.nousresearch.com/docs/)
 - [Amazon Bedrock Knowledge Bases](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html)
 - [AWS Systems Manager Session Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager.html)
+- [kyopark2014/openclaw](https://github.com/kyopark2014/openclaw)
+
+## 감사의 글
+
+이 저장소의 AWS 배포 방식은
+[kyopark2014/openclaw](https://github.com/kyopark2014/openclaw)를 참고했습니다.
+소중한 작업을 공유해 주신
+[kyopark2014](https://github.com/kyopark2014)님께 감사드립니다.
